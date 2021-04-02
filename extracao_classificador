@@ -1,0 +1,133 @@
+#!/usr/bin/env python
+from __future__ import print_function
+
+import tensorflow as tf
+from tensorflow import keras
+
+import numpy as numpy
+import matplotlib.pyplot as plt
+from sklearn.svm import LinearSVC
+from sklearn.metrics import roc_curve, auc
+from skimage.transform import rotate
+from skimage.feature import local_binary_pattern
+from skimage import data
+from skimage.color import label2rgb
+import pydicom
+import os
+import cv2
+import pickle
+
+# configuração do descritor LBP
+radius = 3
+n_points = 8 * radius
+METHOD = 'uniform'
+
+caminhosFoldTrainamento = ['./Fold1', './Fold2' , './Fold3', './Fold4']
+listaTrainamento = [] 
+for foldPath in caminhosFoldTrainamento:
+    for dirName, subdirList, fileList in os.walk(foldPath):
+        for filename in fileList:
+            if ".dcm" in filename.lower(): 
+                listaTrainamento.append(os.path.join(dirName,filename))
+
+data = []
+labels = []
+
+#extracao de caracteristicas
+def lbp_e_hist(image, eps=1e-7):
+        # calcula a representacao da imatem em lbp para criar o hitograma
+        lbp = local_binary_pattern(image, n_points, radius, METHOD)    
+        #plt.imshow(lbp, cmap ="gray") 
+        #plt.show()    
+        (hist, _) = numpy.histogram(lbp.ravel(), bins=numpy.arange(0, n_points + 3), range=(0, n_points + 2))
+
+        # normaliza o histograma
+        hist = hist.astype("float")
+        hist /= (hist.sum() + eps)
+        # retorna o histograma do lbp
+        return hist
+
+#loop sobre lista das imagens de treinamento
+for caminho in listaTrainamento:
+    #carrega o arquivo dicom do caminho informado e manda o vetor de array para a funcao que retorna o histograma do lbp
+    dicomImage = pydicom.read_file(caminho)
+    hist = lbp_e_hist(dicomImage.pixel_array)
+    classe = caminho[-5:][0]
+    
+    #adiciona o hist no vetor de dados e a classe no vetor de labels
+    data.append(hist)
+    labels.append(classe)
+
+print('Treinando')
+
+# cria um modelo usando SVC linear
+model = LinearSVC(C=100.0, random_state=42)
+model.fit(data, labels)
+
+print('Fim treinamento')
+
+PathTest = "./Fold5"
+listaTeste = [] 
+for dirName, subdirList, fileList in os.walk(PathTest):
+    for filename in fileList:
+        if ".dcm" in filename.lower(): 
+            listaTeste.append(os.path.join(dirName,filename))
+
+TP_count = 0
+FP_count = 0
+FN_count = 0
+TN_count = 0
+
+classes_verdadeiras = []
+predicoes = []
+
+print('Testando')
+
+# loop sobre a lista de caminhos das imagens de teste
+for caminho in listaTeste:
+    # carrega a imagem dicom, manda o array de pixel para pegar o histograma
+    # classifica usando o modelo treinado
+    dicomImage = pydicom.read_file(caminho)
+    hist = lbp_e_hist(dicomImage.pixel_array)
+
+    classe = caminho[-5:][0] # classe verdadeira
+
+    #faz a previsao
+    prediction = model.predict(hist.reshape(1, -1))
+
+    predicoes.append(float(prediction))
+    classes_verdadeiras.append(int(classe))
+
+    #calcula se deu TP,FP,FN ou TN
+    
+    if classe != '0' and classe != '1' and prediction[0] == classe:
+        TP_count += 1
+    if classe == '1' and prediction[0] != '0' and prediction[0] != '1':
+        FP_count += 1
+    if classe != '0' and classe != '1' and prediction[0] == '1':
+        FN_count += 1
+    if classe == '1' and prediction[0] == '1':
+        TN_count += 1
+    
+
+print('Fim teste')
+
+sensibilidade = TP_count/(TP_count + FN_count)
+especificidade = TN_count/(TN_count + FP_count)
+
+accuracy = (TP_count + TN_count)/(TP_count + FP_count + FN_count + TN_count)
+
+#print(sensibilidade, especificidade, accuracy)
+
+with open('Sens_Espec.txt', 'w') as out_file:
+    out_file.write('Sensibilidade: ' + str(sensibilidade) + '\n' + 'Especificidade: ' + str(especificidade))
+
+y = numpy.array(classes_verdadeiras)
+scores = numpy.array(predicoes)
+fpr, tpr, thresholds = roc_curve(y, scores, pos_label=5)
+
+plt.plot(fpr,tpr)
+plt.savefig('ROC.png')
+
+
+
